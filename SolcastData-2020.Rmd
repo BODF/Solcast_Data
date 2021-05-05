@@ -1,0 +1,198 @@
+---
+title: "SolCast Analysis of Blue Ridge Farm"
+author: "Jordan White"
+date: "9/16/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+We are interested in building a solar farm at Blue Ridge Rd in Chesapeake. This 
+document is meant to analyze the physical parameters of such an installation. 
+The data used here are solar irradiance and related data, all from a company 
+called SolCast. Solcast uses satellite data combined with advanced meteorological 
+models to estimate historical, current, and future irradiance of a given site. 
+The error in their models tends to be low and is described in detail on 
+their website: https://solcast.com/historical-and-tmy/validation-and-accuracy/ 
+In brief, when compared to a ground measurement station that is close to the 
+proposed site (a station in Hampton, VA), Solcast tends to overestimate 
+irradiance by 1.14% and has an average error of less than 12% (Root mean squared 
+error). The closest Solcast competitor has the same average bias and an average 
+error that is over 2% greater.
+
+Besides calculating solar irradiance, Solcast also calculates expected solar 
+yields for utility scale installations. If a user uploads their site's power 
+generation data, then Solcast's algorithms can learn how the site responds to 
+cloud cover and other environmental factors. This produces better predictions 
+for the given site and also allows for large maintenaince problems to be 
+spotted. See this webpage for more information from Solcast: 
+https://solcast.com/solar-radiation-data/inputs-and-algorithms/#pv-tuning-technology
+
+```{r DataImport, echo=FALSE, warning=FALSE, message=FALSE}
+library(dplyr)
+library(readr)
+library(lubridate)
+library(zoo)
+library(kableExtra)
+
+setwd("~/Documents/SolarPower-BlueRidge/")
+data <- read_csv("36.691364_-76.154219_Solcast_PT60M.csv")
+
+# The below transform converts the UTC times to Eastern standard
+data$PeriodEnd <- data$PeriodEnd - 4*60*60 # 4 secs scaled up to hours
+data$PeriodStart <- data$PeriodStart - 4*60*60
+
+# Also make a window averaged version, averaged by 6 hour windows
+# Global Tilted Irradiation
+convert <- zoo(data$GtiFixedTilt)
+compressed_gti <- rollapply(convert, width = 6, by = 6, FUN = mean)
+compressed_data <- tibble("GtiFixedTilt" = compressed_gti
+                          ,"Time" = data$PeriodStart[seq(from = 3
+                                                         ,to = length(data$PeriodEnd)-1
+                                                         ,by = 6)])
+convert <- zoo(data$GtiTracking)
+compressed_gti <- rollapply(convert, width = 6, by = 6, FUN = mean)
+compressed_data$GtiTracking <- compressed_gti
+```
+
+```{r Plotting_Irradiance, echo=FALSE}
+# Plot tracking versus fixed tilt across the window averaged period
+plot(compressed_data$Time
+     ,compressed_data$GtiTracking
+     ,type='l'
+     ,ylim=c(0,1400)
+     ,xlab="Time across four years (6 hour intervals)"
+     ,ylab="Global Tilted Radiation (W/m^2)"
+     ,main="Calculated Solar Irradiance\nof the Blue Ridge Farm"
+     )
+points(compressed_data$Time
+       ,compressed_data$GtiFixedTilt
+       ,type='l'
+       ,col='#FF000095'
+       )
+legend('topright'
+       ,c("Tracking Panels")
+       ,pch = 22
+       ,pt.bg = 'black'
+       ,pt.cex=1.6
+       ,bty='n'
+       )
+legend('topleft'
+       ,c("Fixed Tilt Panels")
+       ,pch = 22
+       ,pt.bg = '#FF000095'
+       ,pt.cex=1.6
+       ,bty = 'n'
+       )
+```
+
+The above figure is a calculation of what could have happened had we installed 
+a solar system already. It calculates the power per square meter of solar panels 
+across several years. The predictions are mostly based on solar irradiance and 
+weather at the chosen location.
+
+Looking at the above figure, you can see that the absolute amount of power we 
+could generate depends on how many panels we could fit in the field. That in 
+turn depends on their size and how big a shadow each row of panels would cast. 
+Shadowing of one row of panels by another row is to be avoided as it 
+can severely impact performance. 
+If two or more panels are connected to the same DC/AC inverter, each panel will 
+only output the power of the weakest panel in the link.
+
+Let's consider a few possiblities just to gain some initial calculations. 
+Given a panel that is 2 meters deep (300W Utility grade from Invensun), 
+we could probably pack the 
+rows of panels with 63.3 inches between them, assuming the average angle of the 
+sun at this latitude. Assuming the worst case scenario, winter solstice, we 
+could pack the panels with 154 inches between them. These are some wide 
+numbers and the exact optimum for our location would require a search based 
+algorithm that takes the above figure and a table of sun horizon and azimuth 
+angles into account. I can write such an algorithm, given time, but let's start
+with this set of best/worst case numbers.
+
+We have perhaps 50 acres upon which we could build the panels. This is my low 
+estimate that assumes we cannot use the full acreage, due to tree shading and 
+installation space for inverters/batteries. The Inversun panels are 39.0551 
+inches wide and will be about 63.3 inches deep if tilted to our latitude of 36.9º. 
+If each panel requires another 63.3 to 154 inches behind them, then the total 
+area needed for each panel will be between 4,944.376 inches^2 and 8486.673 
+inches^2. One square inch is $\frac{1}{1.5942*10^7}$ of an acre. Thus our min and max 
+panel areas become $7.88*10^{-4}$ acres and $1.35*10^{-3}$. When divided across 
+the 50 acres, we could install perhaps 37037 to 63451 300W panels.
+
+Does that mean we'd get 300W times the number of panels? Not quite. 300W refers 
+to the maximum output of the panels under ideal conditions. We have to 
+consider the efficiency of the panels, which is likely around 20%. We also have 
+to assume some loss of transmission efficiency, perhaps 10% loss. So our 
+calculation will be $Number~~of~~Panels * m^2 ~~ per ~~ panel* 0.2 * 0.9 * Irradiance~~per~~hour$
+
+
+```{r}
+# Calculations using R code:
+panel_area = 1.956*.992 # meters squared
+low_end = 37037* panel_area*.2*.9
+high_end = 63451*panel_area*.2*.9
+fixed_tilt_low <- low_end*data$GtiFixedTilt # per hour basis
+fixed_tilt_high <- high_end*data$GtiFixedTilt
+tracking_low <- low_end*data$GtiTracking
+tracking_high <- high_end*data$GtiTracking
+
+#Summarize the MegaWatt/hours, remove the night hours (zero)
+summary(tracking_high[tracking_high > 0])/1000000
+summary(tracking_low[tracking_low > 0])/1000000
+summary(fixed_tilt_high[fixed_tilt_high > 0])/1000000
+summary(fixed_tilt_low[fixed_tilt_low > 0])/1000000
+```
+
+At 5 cents per kW/h our monetary returns could be plotted as below:
+
+```{r ROI, echo=FALSE}
+tracking_high_dolla <- tracking_high/1000*0.05
+fixed_low_dolla <- fixed_tilt_low/1000*0.05
+
+plot(data$PeriodStart,tracking_high_dolla
+     ,type='l'
+     ,lwd = 2
+     ,xlab="Time by year (hourly)"
+     ,ylab="Raw Return (Dollars)"
+     ,ylim=c(0,1400)
+     ,main="Predicted Returns by the Hour\nAcross Several Years")
+points(data$PeriodStart, fixed_low_dolla
+       ,type = 'l'
+       ,lwd=2
+       ,col="#FF000095")
+legend('topleft', c("High Estimate w/Tracking")
+       ,pch=22
+       ,pt.cex=1.6
+       ,pt.bg = 'black'
+       ,bty='n'
+       ,cex=.9)
+legend('topright', c("Low Estimate w/Fixed")
+       ,pch=22
+       ,pt.cex=1.6
+       ,pt.bg = '#FF000095'
+       ,bty='n'
+       ,cex=.9)
+```
+
+The below table sums up the predicted returns for each year. Note that I pulled 
+these data in September of 2020; hence, without the last three months it has less 
+predicted return. Focus on the '17 -- '19 results which all look relatively stable.
+
+```{r ROI_by_year, echo=FALSE}
+data$TrackingHighDollar <- tracking_high_dolla
+data$FixedLowDollar <- fixed_low_dolla
+data <- data %>% 
+    mutate(Year = year(data$PeriodStart)) %>%
+    group_by(Year)
+totals <- data %>%
+    summarize(High_Estimate = sum(TrackingHighDollar)
+              ,Low_Estimate = sum(FixedLowDollar))
+totals <- totals[totals$Year > 2016,]
+
+kable(totals)
+```
